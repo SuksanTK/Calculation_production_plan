@@ -1,3 +1,4 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 
@@ -5,26 +6,22 @@ def filter_production_data(df):
     """
     ฟังก์ชันสำหรับกรองข้อมูลการผลิตตามเงื่อนไขที่กำหนด
     """
-    # ตรวจสอบว่ามีคอลัมน์ที่จำเป็นครบหรือไม่
-    required_columns = ['ANET', 'QTY', 'Style', 'Asst', 'Zone']
+    required_columns = ['ANET', 'QTY', 'Style', 'Asst', 'Zone', 'Issue date']
     for col in required_columns:
         if col not in df.columns:
-            print(f"❌ Production file ไม่มีคอลัมน์ {col}")
+            st.error(f"❌ Production file ไม่มีคอลัมน์ที่จำเป็น: {col}")
             return None
 
-    # แปลงคอลัมน์ที่เกี่ยวข้องให้เป็นตัวเลข
     df['ANET'] = pd.to_numeric(df['ANET'], errors='coerce')
     df['QTY'] = pd.to_numeric(df['QTY'], errors='coerce')
+    df['Issue date'] = pd.to_numeric(df['Issue date'], errors='coerce')
 
-    # ลบแถวที่ QTY ว่างหรือเป็น 0
-    df_filtered = df.dropna(subset=['QTY'])
-    df_filtered = df_filtered[df_filtered['QTY'] != 0]
+    df_filtered = df.dropna(subset=['QTY', 'Issue date'])
+    df_filtered = df_filtered[df_filtered['QTY'] != 0].copy()
 
-    # เงื่อนไขการกรองตามโจทย์: 'A Net' เป็น 0 หรือ 'A Net' >= 'QTY' / 3
     condition = (df_filtered['ANET'] == 0) | (df_filtered['ANET'] >= df_filtered['QTY'] / 3)
-    df_filtered = df_filtered[condition].copy()
+    df_filtered = df_filtered[condition]
 
-    # เพิ่มคอลัมน์ 'linkk' โดยการรวมคอลัมน์ 'Zone' และ 'Style'
     df_filtered['linkk'] = df_filtered['Zone'].astype(str) + df_filtered['Style'].astype(str)
     return df_filtered
 
@@ -33,30 +30,31 @@ def calculate_capacity(df_production, df_capacity):
     """
     ฟังก์ชันสำหรับคำนวณและจัดสรรการผลิตตาม capacity
     """
-    # Merge dataframes on the 'linkk' column
+    required_prod_cols = ['linkk', 'Issue date', 'Asst', 'Style', 'QTY', 'Zone']
+    for col in required_prod_cols:
+        if col not in df_production.columns:
+            st.error(f"❌ Production Data ที่ถูกกรองแล้วไม่มีคอลัมน์ที่จำเป็น: {col}")
+            return pd.DataFrame()
+
+    required_cap_cols = ['linkk', 'Capacity']
+    for col in required_cap_cols:
+        if col not in df_capacity.columns:
+            st.error(f"❌ Capacity Data ไม่มีคอลัมน์ที่จำเป็น: {col}")
+            return pd.DataFrame()
+
     df_merged = pd.merge(df_production, df_capacity, on='linkk', how='left')
 
-    # Drop the duplicate 'Style_y' and 'Zone_y' columns and rename the remaining ones
-    df_merged = df_merged.drop(columns=['Style_y', 'Zone_y'])
-    df_merged = df_merged.rename(columns={'Style_x': 'Style', 'Zone_x': 'Zone'})
-
-    # Check for missing Capacity values after merge
     if df_merged['Capacity'].isnull().any():
-        print("Warning: There are missing 'Capacity' values after merging. This might cause issues with the calculation.")
+        st.warning("⚠️ พบค่า 'Capacity' ที่หายไปหลังจากการรวมไฟล์ อาจทำให้การคำนวณไม่สมบูรณ์")
 
-    # Initialize an empty DataFrame to store the results
     results_df = pd.DataFrame(columns=['Zone', 'Asst', 'Style', 'Cap_per_shift', 'Day', 'Shift', 'Allocated_QTY', 'linkk'])
 
-    # Ensure 'Capacity' column is numeric
     df_merged['Capacity'] = pd.to_numeric(df_merged['Capacity'], errors='coerce')
 
-    # Loop through each unique Zone and apply the allocation logic
     for zone, group in df_merged.groupby('Zone'):
         current_day = 1
         remaining_A_capacity = 0
         remaining_B_capacity = 0
-
-        # Sort the group by 'Issue date' for consistent allocation order
         group = group.sort_values(by='Issue date')
 
         for _, row in group.iterrows():
@@ -66,8 +64,7 @@ def calculate_capacity(df_production, df_capacity):
             cap_per_shift = row['Capacity']
             linkk = row['linkk']
 
-            if pd.isna(cap_per_shift):
-                # Skip rows where Capacity is not found
+            if pd.isna(cap_per_shift) or pd.isna(QTY_to_allocate):
                 continue
 
             if remaining_A_capacity == 0 and remaining_B_capacity == 0:
@@ -88,10 +85,9 @@ def calculate_capacity(df_production, df_capacity):
                         'linkk': linkk
                     }])
                     results_df = pd.concat([results_df, new_row], ignore_index=True)
-
                     QTY_to_allocate -= allocated_QTY
                     remaining_A_capacity -= allocated_QTY
-
+                
                 if QTY_to_allocate > 0 and remaining_B_capacity > 0:
                     allocated_QTY = min(QTY_to_allocate, remaining_B_capacity)
                     new_row = pd.DataFrame([{
@@ -105,10 +101,9 @@ def calculate_capacity(df_production, df_capacity):
                         'linkk': linkk
                     }])
                     results_df = pd.concat([results_df, new_row], ignore_index=True)
-
                     QTY_to_allocate -= allocated_QTY
                     remaining_B_capacity -= allocated_QTY
-
+                
                 if QTY_to_allocate > 0:
                     current_day += 1
                     remaining_A_capacity = cap_per_shift
@@ -116,35 +111,61 @@ def calculate_capacity(df_production, df_capacity):
     
     return results_df
 
-# ---- Main Execution Block ----
-if __name__ == "__main__":
-    production_filename = 'production_data_master.csv'  # หรือชื่อไฟล์ master ของคุณ
-    capacity_filename = 'capacity_data.csv'
 
+# --- Streamlit UI ---
+st.set_page_config(page_title="Production Capacity Calculator", layout="wide")
+st.title("เครื่องมือคำนวณและจัดสรร Production Capacity")
+
+st.markdown("""
+ยินดีต้อนรับ! อัปโหลดไฟล์ CSV 2 ไฟล์เพื่อคำนวณ:
+1.  **Production Data:** ไฟล์ข้อมูลการผลิตหลัก
+2.  **Capacity Data:** ไฟล์ข้อมูล Capacity ที่ใช้เชื่อมด้วยคอลัมน์ 'linkk'
+""")
+
+uploaded_production_file = st.file_uploader("อัปโหลด Production Data (CSV)", type=["csv"], key="prod")
+uploaded_capacity_file = st.file_uploader("อัปโหลด Capacity Data (CSV)", type=["csv"], key="capa")
+
+if uploaded_production_file and uploaded_capacity_file:
     try:
-        # Read the raw production data
-        df_prod_master = pd.read_csv(production_filename)
-        print("📄 Production Data (Raw):")
-        print(df_prod_master.head(10))
+        df_prod_master = pd.read_csv(uploaded_production_file)
+        df_capacity = pd.read_csv(uploaded_capacity_file)
 
-        # Filter the production data
-        df_filtered = filter_production_data(df_prod_master)
-        
-        if df_filtered is not None:
-            # Read the capacity data
-            df_capacity = pd.read_csv(capacity_filename)
-            
-            # Perform the capacity calculation using the filtered data
-            results_df = calculate_capacity(df_filtered, df_capacity)
+        st.success("✅ อัปโหลดไฟล์สำเร็จ!")
 
-            # Write the final DataFrame to a CSV file
-            output_filename = 'calculated_production_capacity11.csv'
-            results_df.to_csv(output_filename, index=False)
+        st.subheader("ข้อมูล Production Data (ตัวอย่าง 5 แถวแรก)")
+        st.dataframe(df_prod_master.head())
 
-            print(f"\n✅ Production data is filtered and calculation is complete.")
-            print(f"📥 บันทึกผลลัพธ์เรียบร้อย: {output_filename}")
-            print("\n--- First 5 rows of the result ---")
-            print(results_df.head())
+        st.subheader("ข้อมูล Capacity Data (ตัวอย่าง 5 แถวแรก)")
+        st.dataframe(df_capacity.head())
 
-    except FileNotFoundError as e:
-        print(f"❌ Error: {e}. กรุณาวางไฟล์ที่จำเป็น (production_data_master.csv และ capacity_data.csv) ในโฟลเดอร์เดียวกันแล้วลองใหม่")
+        if st.button("เริ่มคำนวณ"):
+            with st.spinner("กำลังประมวลผล..."):
+                df_filtered = filter_production_data(df_prod_master.copy())
+                
+                if df_filtered is not None:
+                    results_df = calculate_capacity(df_filtered, df_capacity)
+
+                    if not results_df.empty:
+                        st.subheader("ผลลัพธ์การคำนวณและจัดสรร Production Capacity")
+                        st.dataframe(results_df)
+
+                        st.markdown("---")
+
+                        # แสดงสรุปผลลัพธ์
+                        total_allocated = results_df['Allocated_QTY'].sum()
+                        total_QTY = df_filtered['QTY'].sum()
+                        st.markdown(f"**จำนวนรวมที่จัดสรรได้:** {total_allocated:,.0f} units")
+                        st.markdown(f"**จำนวนรวมที่ต้องจัดสรร (จากข้อมูลที่กรองแล้ว):** {total_QTY:,.0f} units")
+                        st.markdown(f"**ความแม่นยำในการจัดสรร:** { (total_allocated / total_QTY) * 100 if total_QTY > 0 else 0 :.2f}%")
+
+                        # สร้างปุ่มสำหรับดาวน์โหลด
+                        csv = results_df.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button(
+                            label="📥 ดาวน์โหลดไฟล์ผลลัพธ์ (CSV)",
+                            data=csv,
+                            file_name="calculated_production_capacity.csv",
+                            mime="text/csv",
+                        )
+
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการประมวลผลไฟล์: {e}")
