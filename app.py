@@ -123,7 +123,7 @@ def calculate_capacity(df_production, df_capacity):
 # ------------------------------
 st.set_page_config(page_title="Production Capacity Calculator", page_icon="📊", layout="wide")
 
-st.title("📦 Production Capacity Calculator (Streamlit Version)")
+st.title("📦 Production Capacity Calculator")
 st.markdown("อัปโหลดไฟล์ข้อมูลการผลิต และ capacity เพื่อคำนวณจัดสรรกำลังผลิตอัตโนมัติ")
 
 # อัปโหลดไฟล์ CSV
